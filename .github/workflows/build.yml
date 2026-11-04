@@ -43,8 +43,10 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
+          # Fix TeaSpeak millisecond timestamps
           p = Path("tsclientlib-src/utils/ts-bookkeeping/build/message_parser.rs")
           s = p.read_text()
+
           start = s.index('\t\t"OffsetDateTime" => format!(')
           end = s.index('\n\t\t_ => panic!', start)
 
@@ -89,6 +91,7 @@ jobs:
           s = s[:start] + new_arm + s[end:]
           p.write_text(s)
 
+          # Apply SimpleBot identity and logging fixes
           p = Path("simplebot-src/src/main.rs")
           s = p.read_text()
 
@@ -108,53 +111,9 @@ jobs:
 
           s = s.replace(old_log, new_log, 1)
 
-          old_import = "use tsclientlib::events::Event;"
-
-          if old_import not in s:
-              raise SystemExit("Event import not found")
-
-          s = s.replace(
-              old_import,
-              old_import + "\nuse tsclientlib::messages::c2s::OutClientUpdatePart;",
-              1,
-          )
-
-          anchor = """\tif let Some(r) = r {
-          \t\tr?;
-          \t}
-
-          \tloop {"""
-
-          replacement = """\tif let Some(r) = r {
-          \t\tr?;
-          \t}
-
-          \tOutClientUpdatePart {
-          \t\tclient_nickname: None,
-          \t\tclient_input_muted: None,
-          \t\tclient_output_muted: None,
-          \t\tclient_away: None,
-          \t\tclient_away_message: None,
-          \t\tclient_input_hardware: None,
-          \t\tclient_output_hardware: None,
-          \t\tclient_is_channel_commander: Some(true),
-          \t\tclient_flag_avatar: None,
-          \t\tclient_nickname_phonetic: None,
-          \t\tclient_talk_request: None,
-          \t\tclient_talk_request_msg: None,
-          \t\tclient_is_recording: None,
-          \t\tclient_badges: None,
-          \t}.send(&mut con)?;
-          \tinfo!("Requested Channel Commander status");
-
-          \tloop {"""
-
-          if anchor not in s:
-              raise SystemExit("Connection insertion point not found")
-
-          s = s.replace(anchor, replacement, 1)
           p.write_text(s)
 
+          # Use local patched tsclientlib source
           p = Path("simplebot-src/Cargo.toml")
           manifest = p.read_text()
 
