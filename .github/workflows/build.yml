@@ -38,6 +38,19 @@ jobs:
         working-directory: simplebot-src
         run: cargo update -p time --precise 0.3.36
 
+      - name: Set identity security level
+        working-directory: simplebot-src
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("src/main.rs")
+          s = p.read_text()
+          old = "let identity = Identity::new(private_key, 0);"
+          new = "let mut identity = Identity::new(private_key, 0);\n\tidentity.upgrade_level(8);"
+          assert old in s, "Identity line not found"
+          p.write_text(s.replace(old, new, 1))
+          PY
+
       - name: Compile
         working-directory: simplebot-src
         run: cargo build --release
@@ -58,4 +71,3 @@ jobs:
           files: simplebot-src/target/release/simple-bot
           overwrite_files: true
           make_latest: true
-          
