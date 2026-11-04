@@ -38,17 +38,25 @@ jobs:
         working-directory: simplebot-src
         run: cargo update -p time --precise 0.3.36
 
-      - name: Set identity security level
+      - name: Set identity security level and enable debug logs
         working-directory: simplebot-src
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path("src/main.rs")
           s = p.read_text()
-          old = "let identity = Identity::new(private_key, 0);"
-          new = "let mut identity = Identity::new(private_key, 0);\n\tidentity.upgrade_level(8);"
-          assert old in s, "Identity line not found"
-          p.write_text(s.replace(old, new, 1))
+
+          old_identity = "let identity = Identity::new(private_key, 0);"
+          new_identity = "let mut identity = Identity::new(private_key, 0);\n\tidentity.upgrade_level(8);"
+          assert old_identity in s, "Identity line not found"
+          s = s.replace(old_identity, new_identity, 1)
+
+          old_log = "tracing_subscriber::fmt::init();"
+          new_log = 'tracing_subscriber::fmt().with_env_filter("debug").init();'
+          assert old_log in s, "Log initialization line not found"
+          s = s.replace(old_log, new_log, 1)
+
+          p.write_text(s)
           PY
 
       - name: Compile
