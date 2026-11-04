@@ -1,3 +1,4 @@
+
 name: Build SimpleBot Linux
 
 on:
@@ -42,7 +43,6 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # TeaSpeak sends chat timestamps in milliseconds; tsclientlib expects seconds.
           p = Path("tsclientlib-src/utils/ts-bookkeeping/build/message_parser.rs")
           s = p.read_text()
           start = s.index('\t\t"OffsetDateTime" => format!(')
@@ -79,35 +79,40 @@ jobs:
           \t\t\t\t\t\t}})?).map_err(|e| ParseError::ParseDate {{
           \t\t\t\t\t\t\targ: \\"{}\\",
           \t\t\t\t\t\t\tvalue: val.to_string(),
-          \t\t\t\t\t\t\t source: e,
+          \t\t\t\t\t\t\tsource: e,
           \t\t\t\t\t\t}})?",
           \t\t\t\t\tfield.pretty, field.pretty
           \t\t\t\t)
           \t\t\t}
           \t\t},"""
+
           s = s[:start] + new_arm + s[end:]
           p.write_text(s)
 
-          # Keep the existing identity, enable DEBUG logs, and set Channel Commander
-          # through the ordinary clientupdate command (no ServerQuery involved).
           p = Path("simplebot-src/src/main.rs")
           s = p.read_text()
 
           old_identity = "let identity = Identity::new(private_key, 0);"
           new_identity = "let mut identity = Identity::new(private_key, 0);\n\tidentity.upgrade_level(8);"
+
           if old_identity not in s:
-              raise SystemExit("Identity line not found; upstream source may have changed")
+              raise SystemExit("Identity line not found")
+
           s = s.replace(old_identity, new_identity, 1)
 
           old_log = "tracing_subscriber::fmt::init();"
           new_log = 'tracing_subscriber::fmt().with_env_filter("debug").init();'
+
           if old_log not in s:
-              raise SystemExit("Log initialization line not found; upstream source may have changed")
+              raise SystemExit("Log initialization line not found")
+
           s = s.replace(old_log, new_log, 1)
 
           old_import = "use tsclientlib::events::Event;"
+
           if old_import not in s:
-              raise SystemExit("Event import not found; upstream source may have changed")
+              raise SystemExit("Event import not found")
+
           s = s.replace(
               old_import,
               old_import + "\nuse tsclientlib::messages::c2s::OutClientUpdatePart;",
@@ -119,6 +124,7 @@ jobs:
           \t}
 
           \tloop {"""
+
           replacement = """\tif let Some(r) = r {
           \t\tr?;
           \t}
@@ -142,20 +148,32 @@ jobs:
           \tinfo!("Requested Channel Commander status");
 
           \tloop {"""
+
           if anchor not in s:
-              raise SystemExit("Connection-ready insertion point not found; upstream source may have changed")
+              raise SystemExit("Connection insertion point not found")
+
           s = s.replace(anchor, replacement, 1)
           p.write_text(s)
 
-          # Build against the patched local tsclientlib checkout.
           p = Path("simplebot-src/Cargo.toml")
           manifest = p.read_text()
-          manifest += '\n\n[patch."https://github.com/ReSpeak/tsclientlib"]\ntsclientlib = { path = "../tsclientlib-src/tsclientlib" }\ntsproto-types = { path = "../tsclientlib-src/utils/tsproto-types" }\n'
+
+          manifest += '''
+
+          [patch."https://github.com/ReSpeak/tsclientlib"]
+          tsclientlib = { path = "../tsclientlib-src/tsclientlib" }
+          tsproto-types = { path = "../tsclientlib-src/utils/tsproto-types" }
+          '''
+
           p.write_text(manifest)
           PY
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Update URL dependency
+        working-directory: simplebot-src
+        run: cargo update -p url --precise 2.5.8
 
       - name: Update incompatible time dependency
         working-directory: simplebot-src
