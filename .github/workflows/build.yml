@@ -18,7 +18,7 @@ jobs:
       - name: Install build tools
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential pkg-config perl
+          sudo apt-get install -y build-essential pkg-config perl python3
 
       - name: Download SimpleBot source
         uses: actions/checkout@v4
@@ -171,17 +171,11 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Update pin-project-lite dependency
+      - name: Regenerate dependency lockfile
         working-directory: simplebot-src
-        run: cargo update -p pin-project-lite --precise 0.2.17
-
-      - name: Update URL dependency
-        working-directory: simplebot-src
-        run: cargo update -p url --precise 2.5.8
-
-      - name: Update incompatible time dependency
-        working-directory: simplebot-src
-        run: cargo update -p time --precise 0.3.36
+        run: |
+          rm -f Cargo.lock
+          cargo generate-lockfile
 
       - name: Compile
         working-directory: simplebot-src
