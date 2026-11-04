@@ -8,7 +8,7 @@ on:
       - main
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build:
@@ -49,4 +49,13 @@ jobs:
           path: simplebot-src/target/release/simple-bot
           if-no-files-found: error
           retention-days: 7
+
+      - name: Publish binary to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest SimpleBot
+          files: simplebot-src/target/release/simple-bot
+          overwrite_files: true
+          make_latest: true
           
