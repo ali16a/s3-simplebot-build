@@ -1,1 +1,48 @@
 
+
+name: Build SimpleBot Linux
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    steps:
+      - name: Install build tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config perl
+
+      - name: Download SimpleBot source
+        uses: actions/checkout@v4
+        with:
+          repository: ReSpeak/SimpleBot
+          path: simplebot-src
+
+      - name: Enable vendored OpenSSL
+        working-directory: simplebot-src
+        run: |
+          echo 'openssl-sys = { version = "0.9", features = ["vendored"] }' >> Cargo.toml
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Compile
+        working-directory: simplebot-src
+        run: cargo build --release
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: simple-bot-linux-x86_64
+          path: simplebot-src/target/release/simple-bot
+          if-no-files-found: error
+          retention-days: 7
