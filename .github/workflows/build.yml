@@ -1,5 +1,4 @@
 
-
 name: Build SimpleBot Linux
 
 on:
@@ -35,6 +34,10 @@ jobs:
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
+      - name: Update incompatible time dependency
+        working-directory: simplebot-src
+        run: cargo update -p time --precise 0.3.36
+
       - name: Compile
         working-directory: simplebot-src
         run: cargo build --release
@@ -46,3 +49,4 @@ jobs:
           path: simplebot-src/target/release/simple-bot
           if-no-files-found: error
           retention-days: 7
+          
