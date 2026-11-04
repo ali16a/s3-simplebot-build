@@ -1,4 +1,3 @@
-
 name: Build SimpleBot Linux
 
 on:
@@ -26,10 +25,134 @@ jobs:
           repository: ReSpeak/SimpleBot
           path: simplebot-src
 
+      - name: Download tsclientlib source with declarations
+        uses: actions/checkout@v4
+        with:
+          repository: ReSpeak/tsclientlib
+          path: tsclientlib-src
+          submodules: recursive
+
       - name: Enable vendored OpenSSL
         working-directory: simplebot-src
         run: |
           echo 'openssl-sys = { version = "0.9", features = ["vendored"] }' >> Cargo.toml
+
+      - name: Apply TeaSpeak protocol and bot fixes
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          # TeaSpeak sends chat timestamps in milliseconds; tsclientlib expects seconds.
+          p = Path("tsclientlib-src/utils/ts-bookkeeping/build/message_parser.rs")
+          s = p.read_text()
+          start = s.index('\t\t"OffsetDateTime" => format!(')
+          end = s.index('\n\t\t_ => panic!', start)
+
+          new_arm = """\t\t"OffsetDateTime" => {
+          \t\t\tif field.ts == "timestamp" {
+          \t\t\t\tformat!(
+          \t\t\t\t\t"OffsetDateTime::from_unix_timestamp({{
+          \t\t\t\t\t\tlet timestamp = val.parse::<i64>().map_err(|e| ParseError::ParseInt {{
+          \t\t\t\t\t\t\targ: \\"{}\\",
+          \t\t\t\t\t\t\tvalue: val.to_string(),
+          \t\t\t\t\t\t\tsource: e,
+          \t\t\t\t\t\t}})?;
+          \t\t\t\t\t\tif timestamp > 253_402_300_799 || timestamp < -377_705_116_800 {{
+          \t\t\t\t\t\t\ttimestamp / 1000
+          \t\t\t\t\t\t}} else {{
+          \t\t\t\t\t\t\ttimestamp
+          \t\t\t\t\t\t}}
+          \t\t\t\t\t}}).map_err(|e| ParseError::ParseDate {{
+          \t\t\t\t\t\targ: \\"{}\\",
+          \t\t\t\t\t\tvalue: val.to_string(),
+          \t\t\t\t\t\tsource: e,
+          \t\t\t\t\t}})?",
+          \t\t\t\t\tfield.pretty, field.pretty
+          \t\t\t\t)
+          \t\t\t} else {
+          \t\t\t\tformat!(
+          \t\t\t\t\t"OffsetDateTime::from_unix_timestamp(
+          \t\t\t\t\t\tval.parse().map_err(|e| ParseError::ParseInt {{
+          \t\t\t\t\t\t\targ: \\"{}\\",
+          \t\t\t\t\t\t\tvalue: val.to_string(),
+          \t\t\t\t\t\t\tsource: e,
+          \t\t\t\t\t\t}})?).map_err(|e| ParseError::ParseDate {{
+          \t\t\t\t\t\t\targ: \\"{}\\",
+          \t\t\t\t\t\t\tvalue: val.to_string(),
+          \t\t\t\t\t\t\t source: e,
+          \t\t\t\t\t\t}})?",
+          \t\t\t\t\tfield.pretty, field.pretty
+          \t\t\t\t)
+          \t\t\t}
+          \t\t},"""
+          s = s[:start] + new_arm + s[end:]
+          p.write_text(s)
+
+          # Keep the existing identity, enable DEBUG logs, and set Channel Commander
+          # through the ordinary clientupdate command (no ServerQuery involved).
+          p = Path("simplebot-src/src/main.rs")
+          s = p.read_text()
+
+          old_identity = "let identity = Identity::new(private_key, 0);"
+          new_identity = "let mut identity = Identity::new(private_key, 0);\n\tidentity.upgrade_level(8);"
+          if old_identity not in s:
+              raise SystemExit("Identity line not found; upstream source may have changed")
+          s = s.replace(old_identity, new_identity, 1)
+
+          old_log = "tracing_subscriber::fmt::init();"
+          new_log = 'tracing_subscriber::fmt().with_env_filter("debug").init();'
+          if old_log not in s:
+              raise SystemExit("Log initialization line not found; upstream source may have changed")
+          s = s.replace(old_log, new_log, 1)
+
+          old_import = "use tsclientlib::events::Event;"
+          if old_import not in s:
+              raise SystemExit("Event import not found; upstream source may have changed")
+          s = s.replace(
+              old_import,
+              old_import + "\nuse tsclientlib::messages::c2s::OutClientUpdatePart;",
+              1,
+          )
+
+          anchor = """\tif let Some(r) = r {
+          \t\tr?;
+          \t}
+
+          \tloop {"""
+          replacement = """\tif let Some(r) = r {
+          \t\tr?;
+          \t}
+
+          \tOutClientUpdatePart {
+          \t\tclient_nickname: None,
+          \t\tclient_input_muted: None,
+          \t\tclient_output_muted: None,
+          \t\tclient_away: None,
+          \t\tclient_away_message: None,
+          \t\tclient_input_hardware: None,
+          \t\tclient_output_hardware: None,
+          \t\tclient_is_channel_commander: Some(true),
+          \t\tclient_flag_avatar: None,
+          \t\tclient_nickname_phonetic: None,
+          \t\tclient_talk_request: None,
+          \t\tclient_talk_request_msg: None,
+          \t\tclient_is_recording: None,
+          \t\tclient_badges: None,
+          \t}.send(&mut con)?;
+          \tinfo!("Requested Channel Commander status");
+
+          \tloop {"""
+          if anchor not in s:
+              raise SystemExit("Connection-ready insertion point not found; upstream source may have changed")
+          s = s.replace(anchor, replacement, 1)
+          p.write_text(s)
+
+          # Build against the patched local tsclientlib checkout.
+          p = Path("simplebot-src/Cargo.toml")
+          manifest = p.read_text()
+          manifest += '\n\n[patch."https://github.com/ReSpeak/tsclientlib"]\ntsclientlib = { path = "../tsclientlib-src/tsclientlib" }\ntsproto-types = { path = "../tsclientlib-src/utils/tsproto-types" }\n'
+          p.write_text(manifest)
+          PY
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
@@ -37,27 +160,6 @@ jobs:
       - name: Update incompatible time dependency
         working-directory: simplebot-src
         run: cargo update -p time --precise 0.3.36
-
-      - name: Set identity security level and enable debug logs
-        working-directory: simplebot-src
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          p = Path("src/main.rs")
-          s = p.read_text()
-
-          old_identity = "let identity = Identity::new(private_key, 0);"
-          new_identity = "let mut identity = Identity::new(private_key, 0);\n\tidentity.upgrade_level(8);"
-          assert old_identity in s, "Identity line not found"
-          s = s.replace(old_identity, new_identity, 1)
-
-          old_log = "tracing_subscriber::fmt::init();"
-          new_log = 'tracing_subscriber::fmt().with_env_filter("debug").init();'
-          assert old_log in s, "Log initialization line not found"
-          s = s.replace(old_log, new_log, 1)
-
-          p.write_text(s)
-          PY
 
       - name: Compile
         working-directory: simplebot-src
@@ -79,3 +181,4 @@ jobs:
           files: simplebot-src/target/release/simple-bot
           overwrite_files: true
           make_latest: true
+          
