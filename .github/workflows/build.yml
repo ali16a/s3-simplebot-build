@@ -138,7 +138,7 @@ jobs:
           p.write_text(manifest)
           PY
 
-      - name: Add Gemini AI with per-user memory
+      - name: Add Gemini AI with diagnostics and memory
         run: |
           python3 - <<'PY'
           from pathlib import Path
@@ -205,6 +205,13 @@ jobs:
           fn handle_event(bot: &mut Bot, con: &mut Connection, event: &[Event]) {
               for e in event {
                   if let Event::Message { target, invoker, message } = e {
+
+                      debug!(
+                          user_id = ?invoker.id,
+                          message_chars = message.to_string().chars().count(),
+                          "Incoming TeaSpeak message"
+                      );
+
                       if invoker.id == con.get_state().unwrap().own_client {
                           continue;
                       }
@@ -216,6 +223,7 @@ jobs:
                           rate.retain(|i| now.duration_since(*i) <= second);
 
                           if rate.len() >= bot.settings.rate_limit as usize {
+                              debug!("Message skipped by rate limit");
                               continue;
                           }
                       }
@@ -226,8 +234,10 @@ jobs:
                           message,
                       };
 
-                      // Existing commands and actions have priority.
+                      // Existing commands and actions always have priority.
                       if let Some(response) = bot.actions.handle(bot, con, &msg) {
+                          debug!("Existing action handled the message");
+
                           bot.rate_limiting.push(Instant::now());
 
                           let state = con.get_state().unwrap();
@@ -240,18 +250,24 @@ jobs:
                           if let Err(error) =
                               state.send_message(reply_target, response.as_ref()).send(con)
                           {
-                              error!(%error, "Failed to send response");
+                              error!(%error, "Failed to send action response");
                           }
 
                           continue;
                       }
 
+                      // Read API key without logging its value.
                       let api_key = match env::var("GEMINI_API_KEY") {
-                          Ok(key) if !key.trim().is_empty() => key,
-                          _ => continue,
+                          Ok(key) if !key.trim().is_empty() => {
+                              info!("GEMINI_API_KEY is configured");
+                              key
+                          },
+                          _ => {
+                              warn!("GEMINI_API_KEY is missing or empty; Gemini skipped");
+                              continue;
+                          },
                       };
 
-                      // Separate memory for each client ID.
                       let history_key = format!("{:?}", invoker.id);
 
                       let history = bot.ai_history
@@ -261,6 +277,11 @@ jobs:
 
                       let user_text = message.to_string();
 
+                      info!(
+                          user_id = ?invoker.id,
+                          "Sending message to Gemini"
+                      );
+
                       // Run blocking HTTP work on a separate thread.
                       let result = std::thread::spawn(move || {
                           gemini_reply(&api_key, &history, &user_text)
@@ -268,13 +289,19 @@ jobs:
 
                       match result {
                           Ok(Ok(answer)) => {
+                              info!(
+                                  user_id = ?invoker.id,
+                                  answer_chars = answer.chars().count(),
+                                  "Gemini returned a response"
+                              );
+
                               let entry = bot.ai_history
                                   .entry(history_key)
                                   .or_default();
 
                               entry.push((message.to_string(), answer.clone()));
 
-                              // Keep the latest six exchanges.
+                              // Keep latest six exchanges per user.
                               if entry.len() > 6 {
                                   entry.remove(0);
                               }
@@ -291,15 +318,29 @@ jobs:
 
                               let state = con.get_state().unwrap();
 
+                              info!(
+                                  user_id = ?invoker.id,
+                                  "Sending Gemini response to TeaSpeak"
+                              );
+
                               if let Err(error) =
                                   state.send_message(reply_target, safe_answer.as_str()).send(con)
                               {
                                   error!(%error, "Failed to send Gemini response");
+                              } else {
+                                  info!(
+                                      user_id = ?invoker.id,
+                                      "Gemini response successfully sent"
+                                  );
                               }
                           }
 
                           Ok(Err(error)) => {
-                              error!(%error, "Gemini API request failed");
+                              error!(
+                                  user_id = ?invoker.id,
+                                  %error,
+                                  "Gemini API request failed"
+                              );
                           }
 
                           Err(_) => {
@@ -315,8 +356,9 @@ jobs:
               history: &[(String, String)],
               user_message: &str,
           ) -> Result<String> {
+
               let client = reqwest::blocking::Client::builder()
-                  .timeout(Duration::from_secs(20))
+                  .timeout(Duration::from_secs(25))
                   .build()?;
 
               let mut contents = Vec::new();
@@ -350,17 +392,38 @@ jobs:
                   }
               });
 
-              let response: Value = client
+              let http_response = client
                   .post("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")
                   .header("x-goog-api-key", api_key)
                   .json(&body)
-                  .send()?
-                  .error_for_status()?
-                  .json()?;
+                  .send()?;
+
+              let status = http_response.status();
+              let response_text = http_response.text()?;
+
+              if !status.is_success() {
+                  let detail = response_text
+                      .chars()
+                      .take(1200)
+                      .collect::<String>();
+
+                  anyhow::bail!(
+                      "Gemini HTTP {}: {}",
+                      status,
+                      detail
+                  );
+              }
+
+              let response: Value = serde_json::from_str(&response_text)?;
 
               let parts = response["candidates"][0]["content"]["parts"]
                   .as_array()
-                  .ok_or_else(|| anyhow::anyhow!("Gemini returned no text candidate"))?;
+                  .ok_or_else(|| {
+                      anyhow::anyhow!(
+                          "Gemini returned no text candidate. Response: {}",
+                          response_text.chars().take(800).collect::<String>()
+                      )
+                  })?;
 
               let answer = parts.iter()
                   .filter_map(|part| {
@@ -382,7 +445,7 @@ jobs:
           s = s[:start] + new_function + s[end:]
           p.write_text(s)
 
-          print("Gemini integration added successfully.")
+          print("Gemini AI with diagnostics installed successfully.")
           PY
 
       - name: Install Rust
