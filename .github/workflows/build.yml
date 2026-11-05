@@ -185,7 +185,7 @@ jobs:
           end = s.index("\nfn escape_bb", start)
 
           new_code = r'''
-          const GEMINI_API_KEY: &str = "AQ.Ab8RN6JJTJ8c5qc0vj_jIQdPE8AlkvEzYVkmySDfdMbMoE7FMw";
+          const GEMINI_API_KEY: &str = "AQ.AQ.Ab8RN6Kjijrl1dkcUlJza0GfwV2WEmYCGESzgfUbmE3HXvVOjw";
 
           fn handle_event(bot: &mut Bot, con: &mut Connection, event: &[Event]) {
               for e in event {
