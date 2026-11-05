@@ -185,8 +185,6 @@ jobs:
           end = s.index("\nfn escape_bb", start)
 
           new_code = r'''
-          const GEMINI_API_KEY: &str = "AQ.AQ.Ab8RN6Kjijrl1dkcUlJza0GfwV2WEmYCGESzgfUbmE3HXvVOjw";
-
           fn handle_event(bot: &mut Bot, con: &mut Connection, event: &[Event]) {
               for e in event {
                   if let Event::Message { target, invoker, message } = e {
@@ -217,9 +215,10 @@ jobs:
                           message,
                       };
 
-                      // Existing actions have priority.
+                      // Existing actions always have priority.
                       if let Some(response) = bot.actions.handle(bot, con, &msg) {
                           let state = con.get_state().unwrap();
+
                           let reply_target = match target {
                               MessageTarget::Client(_) => MessageTarget::Client(invoker.id),
                               _ => *target,
@@ -236,6 +235,7 @@ jobs:
                       }
 
                       let history_key = format!("{:?}", invoker.id);
+
                       let history = bot.ai_history
                           .get(&history_key)
                           .cloned()
@@ -278,9 +278,11 @@ jobs:
 
                               bot.rate_limiting.push(Instant::now());
                           }
+
                           Ok(Err(error)) => {
                               error!(%error, "Gemini API request failed");
                           }
+
                           Err(_) => {
                               error!("Gemini worker thread failed");
                           }
@@ -293,6 +295,10 @@ jobs:
               history: &[(String, String)],
               user_message: &str,
           ) -> anyhow::Result<String> {
+
+              let api_key = std::env::var("GEMINI_API_KEY")
+                  .map_err(|_| anyhow::anyhow!("GEMINI_API_KEY environment variable is missing"))?;
+
               let client = reqwest::blocking::Client::builder()
                   .timeout(Duration::from_secs(25))
                   .build()?;
@@ -330,7 +336,7 @@ jobs:
 
               let response = client
                   .post("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")
-                  .header("x-goog-api-key", GEMINI_API_KEY)
+                  .header("x-goog-api-key", api_key)
                   .json(&body)
                   .send()?;
 
