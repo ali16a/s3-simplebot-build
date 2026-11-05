@@ -101,11 +101,11 @@ jobs:
           s = s.replace(old, new, 1)
 
           old = "tracing_subscriber::fmt::init();"
-          new = 'tracing_subscriber::fmt().with_env_filter("debug").init();'
+          new = 'tracing_subscriber::fmt().with_env_filter("debug").init()'
 
           if old not in s:
               raise SystemExit("Log initialization line not found")
-          s = s.replace(old, new, 1)
+          s = s.replace(old, new + ";", 1)
 
           old = "state.send_message(*target, response.as_ref()).send(con)"
           new = """{
@@ -242,9 +242,10 @@ jobs:
                           .unwrap_or_default();
 
                       let user_text = message.to_string();
+                      let ai_text = user_text.clone();
 
                       let result = std::thread::spawn(move || {
-                          gemini_reply(&history, &user_text)
+                          gemini_reply(&history, &ai_text)
                       }).join();
 
                       match result {
