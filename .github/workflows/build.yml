@@ -123,7 +123,6 @@ jobs:
               raise SystemExit("Reply target line not found")
 
           s = s.replace(old_reply, new_reply, 1)
-
           p.write_text(s)
 
           p = Path("simplebot-src/Cargo.toml")
@@ -137,6 +136,253 @@ jobs:
           '''
 
           p.write_text(manifest)
+          PY
+
+      - name: Add Gemini AI with per-user memory
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          def replace_once(s, old, new, label):
+              if s.count(old) != 1:
+                  raise SystemExit(f"Could not uniquely find: {label}")
+              return s.replace(old, new, 1)
+
+          cargo = Path("simplebot-src/Cargo.toml")
+          s = cargo.read_text()
+
+          s = replace_once(
+              s,
+              'tsproto-types = { git = "https://github.com/ReSpeak/tsclientlib" }\n',
+              'tsproto-types = { git = "https://github.com/ReSpeak/tsclientlib" }\n'
+              'reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }\n'
+              'serde_json = "1"\n',
+              "Cargo dependencies"
+          )
+
+          cargo.write_text(s)
+
+          p = Path("simplebot-src/src/main.rs")
+          s = p.read_text()
+
+          s = replace_once(
+              s,
+              "use std::cell::Cell;\n",
+              "use std::cell::Cell;\n"
+              "use std::collections::HashMap;\n"
+              "use std::env;\n",
+              "imports"
+          )
+
+          s = replace_once(
+              s,
+              "use serde::{Deserialize, Serialize};\n",
+              "use serde::{Deserialize, Serialize};\n"
+              "use serde_json::{json, Value};\n",
+              "serde imports"
+          )
+
+          s = replace_once(
+              s,
+              "should_reload: Cell<bool>,\n",
+              "should_reload: Cell<bool>,\n"
+              "ai_history: HashMap<String, Vec<(String, String)>>,\n",
+              "Bot history field"
+          )
+
+          s = replace_once(
+              s,
+              "should_reload: Default::default(),\n",
+              "should_reload: Default::default(),\n"
+              "ai_history: Default::default(),\n",
+              "Bot history initialization"
+          )
+
+          start = s.index("fn handle_event(")
+          end = s.index("\nfn escape_bb", start)
+
+          new_function = r'''
+          fn handle_event(bot: &mut Bot, con: &mut Connection, event: &[Event]) {
+              for e in event {
+                  if let Event::Message { target, invoker, message } = e {
+                      if invoker.id == con.get_state().unwrap().own_client {
+                          continue;
+                      }
+
+                      {
+                          let rate = &mut bot.rate_limiting;
+                          let now = Instant::now();
+                          let second = Duration::from_secs(1);
+                          rate.retain(|i| now.duration_since(*i) <= second);
+
+                          if rate.len() >= bot.settings.rate_limit as usize {
+                              continue;
+                          }
+                      }
+
+                      let msg = Message {
+                          target: *target,
+                          invoker: invoker.as_ref(),
+                          message,
+                      };
+
+                      // Existing commands and actions have priority.
+                      if let Some(response) = bot.actions.handle(bot, con, &msg) {
+                          bot.rate_limiting.push(Instant::now());
+
+                          let state = con.get_state().unwrap();
+
+                          let reply_target = match target {
+                              MessageTarget::Client(_) => MessageTarget::Client(invoker.id),
+                              _ => *target,
+                          };
+
+                          if let Err(error) =
+                              state.send_message(reply_target, response.as_ref()).send(con)
+                          {
+                              error!(%error, "Failed to send response");
+                          }
+
+                          continue;
+                      }
+
+                      let api_key = match env::var("GEMINI_API_KEY") {
+                          Ok(key) if !key.trim().is_empty() => key,
+                          _ => continue,
+                      };
+
+                      // Separate memory for each client ID.
+                      let history_key = format!("{:?}", invoker.id);
+
+                      let history = bot.ai_history
+                          .get(&history_key)
+                          .cloned()
+                          .unwrap_or_default();
+
+                      let user_text = message.to_string();
+
+                      // Run blocking HTTP work on a separate thread.
+                      let result = std::thread::spawn(move || {
+                          gemini_reply(&api_key, &history, &user_text)
+                      }).join();
+
+                      match result {
+                          Ok(Ok(answer)) => {
+                              let entry = bot.ai_history
+                                  .entry(history_key)
+                                  .or_default();
+
+                              entry.push((message.to_string(), answer.clone()));
+
+                              // Keep the latest six exchanges.
+                              if entry.len() > 6 {
+                                  entry.remove(0);
+                              }
+
+                              bot.rate_limiting.push(Instant::now());
+
+                              let safe_answer = escape_bb(&answer);
+
+                              let reply_target = match target {
+                                  MessageTarget::Client(_) | MessageTarget::Poke(_) =>
+                                      MessageTarget::Client(invoker.id),
+                                  _ => *target,
+                              };
+
+                              let state = con.get_state().unwrap();
+
+                              if let Err(error) =
+                                  state.send_message(reply_target, safe_answer.as_str()).send(con)
+                              {
+                                  error!(%error, "Failed to send Gemini response");
+                              }
+                          }
+
+                          Ok(Err(error)) => {
+                              error!(%error, "Gemini API request failed");
+                          }
+
+                          Err(_) => {
+                              error!("Gemini worker thread failed");
+                          }
+                      }
+                  }
+              }
+          }
+
+          fn gemini_reply(
+              api_key: &str,
+              history: &[(String, String)],
+              user_message: &str,
+          ) -> Result<String> {
+              let client = reqwest::blocking::Client::builder()
+                  .timeout(Duration::from_secs(20))
+                  .build()?;
+
+              let mut contents = Vec::new();
+
+              for (user, assistant) in history {
+                  contents.push(json!({
+                      "role": "user",
+                      "parts": [{"text": user}]
+                  }));
+
+                  contents.push(json!({
+                      "role": "model",
+                      "parts": [{"text": assistant}]
+                  }));
+              }
+
+              contents.push(json!({
+                  "role": "user",
+                  "parts": [{"text": user_message}]
+              }));
+
+              let body = json!({
+                  "system_instruction": {
+                      "parts": [{
+                          "text": "تو علی‌بات هستی؛ یک دستیار فارسی‌زبان خودمانی، باهوش، خوش‌برخورد و کمی شوخ‌طبع. طبیعی و کوتاه جواب بده، مثل یک انسان در چت. از ایموجی به اندازه استفاده کن. اگر جواب چیزی را نمی‌دانی، صادقانه بگو و حدس را به جای واقعیت جا نزن. به زبان کاربر پاسخ بده و از توضیح اضافه پرهیز کن."
+                      }]
+                  },
+                  "contents": contents,
+                  "generationConfig": {
+                      "maxOutputTokens": 220
+                  }
+              });
+
+              let response: Value = client
+                  .post("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")
+                  .header("x-goog-api-key", api_key)
+                  .json(&body)
+                  .send()?
+                  .error_for_status()?
+                  .json()?;
+
+              let parts = response["candidates"][0]["content"]["parts"]
+                  .as_array()
+                  .ok_or_else(|| anyhow::anyhow!("Gemini returned no text candidate"))?;
+
+              let answer = parts.iter()
+                  .filter_map(|part| {
+                      part.get("text").and_then(Value::as_str)
+                  })
+                  .collect::<Vec<_>>()
+                  .join("");
+
+              let answer = answer.trim();
+
+              if answer.is_empty() {
+                  anyhow::bail!("Gemini returned an empty response");
+              }
+
+              Ok(answer.chars().take(650).collect())
+          }
+          '''
+
+          s = s[:start] + new_function + s[end:]
+          p.write_text(s)
+
+          print("Gemini integration added successfully.")
           PY
 
       - name: Install Rust
@@ -168,4 +414,3 @@ jobs:
           files: simplebot-src/target/release/simple-bot
           overwrite_files: true
           make_latest: true
-          
