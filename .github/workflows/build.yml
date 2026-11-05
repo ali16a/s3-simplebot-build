@@ -45,6 +45,7 @@ jobs:
 
           p = Path("tsclientlib-src/utils/ts-bookkeeping/build/message_parser.rs")
           s = p.read_text()
+
           start = s.index('\t\t"OffsetDateTime" => format!(')
           end = s.index('\n\t\t_ => panic!', start)
 
@@ -109,11 +110,14 @@ jobs:
           s = s.replace(old_log, new_log, 1)
 
           old_reply = "state.send_message(*target, response.as_ref()).send(con)"
-          new_reply = """let reply_target = match target {
-              MessageTarget::Client(_) => MessageTarget::Client(invoker.id),
-              _ => *target,
-          };
-          state.send_message(reply_target, response.as_ref()).send(con)"""
+
+          new_reply = """{
+              let reply_target = match target {
+                  MessageTarget::Client(_) => MessageTarget::Client(invoker.id),
+                  _ => *target,
+              };
+              state.send_message(reply_target, response.as_ref()).send(con)
+          }"""
 
           if old_reply not in s:
               raise SystemExit("Reply target line not found")
