@@ -43,10 +43,8 @@ jobs:
           python3 - <<'PY'
           from pathlib import Path
 
-          # Fix TeaSpeak millisecond timestamps
           p = Path("tsclientlib-src/utils/ts-bookkeeping/build/message_parser.rs")
           s = p.read_text()
-
           start = s.index('\t\t"OffsetDateTime" => format!(')
           end = s.index('\n\t\t_ => panic!', start)
 
@@ -91,7 +89,6 @@ jobs:
           s = s[:start] + new_arm + s[end:]
           p.write_text(s)
 
-          # Apply SimpleBot identity and logging fixes
           p = Path("simplebot-src/src/main.rs")
           s = p.read_text()
 
@@ -111,9 +108,20 @@ jobs:
 
           s = s.replace(old_log, new_log, 1)
 
+          old_reply = "state.send_message(*target, response.as_ref()).send(con)"
+          new_reply = """let reply_target = match target {
+              MessageTarget::Client(_) => MessageTarget::Client(invoker.id),
+              _ => *target,
+          };
+          state.send_message(reply_target, response.as_ref()).send(con)"""
+
+          if old_reply not in s:
+              raise SystemExit("Reply target line not found")
+
+          s = s.replace(old_reply, new_reply, 1)
+
           p.write_text(s)
 
-          # Use local patched tsclientlib source
           p = Path("simplebot-src/Cargo.toml")
           manifest = p.read_text()
 
