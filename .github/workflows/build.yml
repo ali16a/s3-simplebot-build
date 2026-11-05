@@ -1,4 +1,3 @@
-
 name: Build SimpleBot Linux
 
 on:
@@ -376,6 +375,36 @@ jobs:
           print("Gemini integration added.")
           PY
 
+      - name: Load .env and configurable Gemini model
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          cargo = Path("simplebot-src/Cargo.toml")
+          s = cargo.read_text()
+          anchor = 'features = ["blocking", "json", "rustls-tls"] }\n'
+          if s.count(anchor) != 1:
+              raise SystemExit("reqwest anchor not found")
+          cargo.write_text(s.replace(anchor, anchor + 'dotenvy = "0.15"\n', 1))
+
+          p = Path("simplebot-src/src/main.rs")
+          s = p.read_text()
+
+          anchor = 'tracing_subscriber::fmt().with_env_filter("debug").init();'
+          if s.count(anchor) != 1:
+              raise SystemExit("tracing init anchor not found")
+          s = s.replace(anchor, "let _ = dotenvy::dotenv();\n\t" + anchor, 1)
+
+          old = '.post("https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent")'
+          new = '.post(format!("https://generativelanguage.googleapis.com/v1beta/models/{}:generateContent", std::env::var("GEMINI_MODEL").unwrap_or_else(|_| "gemini-3.8-flash".to_string())))'
+          if s.count(old) != 1:
+              raise SystemExit("Gemini URL anchor not found")
+          s = s.replace(old, new, 1)
+
+          p.write_text(s)
+          print("dotenvy + GEMINI_MODEL added")
+          PY
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
 
@@ -405,3 +434,4 @@ jobs:
           files: simplebot-src/target/release/simple-bot
           overwrite_files: true
           make_latest: true
+          
